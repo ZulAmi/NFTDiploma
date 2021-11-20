@@ -1,7 +1,7 @@
 Moralis.initialize(""); // Application id from moralis.io
 Moralis.serverURL = ""; //Server url from moralis.io
 
-const nft_market_place_address = "" //NFT Market Place Contract, code of this contract is in the following github repository https://github.com/DanielMoralisSamples/25_NFT_MARKET_PLACE. 
+const nft_market_place_address = "" //NFT Market Place Contract
 
 const web3 = new Web3(window.ethereum);
 
