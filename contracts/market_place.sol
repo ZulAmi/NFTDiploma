@@ -1,50 +1,141 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.9;
+pragma solidity ^0.8.0;
 
-import "OpenZeppelin/openzeppelin-contracts@4.0.0/contracts/token/ERC721/ERC721.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-contract MarketPlace {
-    event BalanceWithdrawn(address indexed beneficiary, uint256 amount);
-    event OperatorChanged(address previousOperator, address newOperator);
-
-    address operator;
-    uint256 offeringNonce;
-
-    struct offering {
+contract NFTMarketplace is ReentrancyGuard, Pausable, Ownable {
+    struct Listing {
+        address seller;
+        address nftContract;
         uint256 tokenId;
         uint256 price;
-        bool closed;
+        bool isActive;
     }
 
-    mapping(bytes32 => offering) offeringRegistry;
-    mapping(address => uint256) balances;
+    // State variables
+    uint256 public marketplaceFee = 250; // 2.5% fee (basis points)
+    mapping(uint256 => Listing) public listings;
+    uint256 private _listingCounter;
 
-    constructor(address _operator) {
-        operator = _operator;
+    // Events
+    event Listed(
+        uint256 indexed listingId,
+        address indexed seller,
+        address indexed nftContract,
+        uint256 tokenId,
+        uint256 price
+    );
+    event Sale(
+        uint256 indexed listingId,
+        address indexed buyer,
+        address indexed seller,
+        uint256 price
+    );
+    event ListingCanceled(uint256 indexed listingId);
+    event FeeUpdated(uint256 newFee);
+
+    constructor() {
+        _listingCounter = 0;
     }
 
-    function withdrawBalance() external {
+    function listNFT(
+        address _nftContract,
+        uint256 _tokenId,
+        uint256 _price
+    ) external whenNotPaused nonReentrant returns (uint256) {
+        require(_price > 0, "Price must be greater than 0");
         require(
-            balances[msg.sender] > 0,
-            "You don't have any balance to withdraw"
+            IERC721(_nftContract).ownerOf(_tokenId) == msg.sender,
+            "Not token owner"
         );
-        uint256 amount = balances[msg.sender];
-        payable(msg.sender).transfer(amount);
-        balances[msg.sender] = 0;
-        emit BalanceWithdrawn(msg.sender, amount);
-    }
-
-    function changeOperator(address _newOperator) external {
         require(
-            msg.sender == operator,
-            "only the operator can change the current operator"
+            IERC721(_nftContract).getApproved(_tokenId) == address(this),
+            "Marketplace not approved"
         );
-        address previousOperator = operator;
-        operator = msg.sender;
-        emit OperatorChanged(previousOperator, operator);
+
+        _listingCounter++;
+        listings[_listingCounter] = Listing({
+            seller: msg.sender,
+            nftContract: _nftContract,
+            tokenId: _tokenId,
+            price: _price,
+            isActive: true
+        });
+
+        emit Listed(
+            _listingCounter,
+            msg.sender,
+            _nftContract,
+            _tokenId,
+            _price
+        );
+
+        return _listingCounter;
     }
 
-    function viewBalances(address _address) external view returns (uint256) {
-        return (balances[_address]);
+    function buyNFT(
+        uint256 _listingId
+    ) external payable whenNotPaused nonReentrant {
+        Listing storage listing = listings[_listingId];
+        require(listing.isActive, "Listing not active");
+        require(msg.value == listing.price, "Incorrect payment amount");
+        require(msg.sender != listing.seller, "Seller cannot buy");
+
+        listing.isActive = false;
+
+        uint256 feeAmount = (listing.price * marketplaceFee) / 10000;
+        uint256 sellerAmount = listing.price - feeAmount;
+
+        // Transfer NFT to buyer
+        IERC721(listing.nftContract).safeTransferFrom(
+            listing.seller,
+            msg.sender,
+            listing.tokenId
+        );
+
+        // Transfer payment to seller
+        (bool success, ) = payable(listing.seller).call{value: sellerAmount}(
+            ""
+        );
+        require(success, "Failed to send ETH to seller");
+
+        emit Sale(_listingId, msg.sender, listing.seller, listing.price);
     }
+
+    function cancelListing(uint256 _listingId) external nonReentrant {
+        Listing storage listing = listings[_listingId];
+        require(listing.seller == msg.sender, "Not seller");
+        require(listing.isActive, "Listing not active");
+
+        listing.isActive = false;
+        emit ListingCanceled(_listingId);
+    }
+
+    function updateMarketplaceFee(uint256 _newFee) external onlyOwner {
+        require(_newFee <= 1000, "Fee too high"); // Max 10%
+        marketplaceFee = _newFee;
+        emit FeeUpdated(_newFee);
+    }
+
+    function getListing(
+        uint256 _listingId
+    ) external view returns (Listing memory) {
+        return listings[_listingId];
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    receive() external payable {}
+
+    fallback() external payable {}
 }
